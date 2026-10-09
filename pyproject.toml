@@ -1,0 +1,16 @@
+[project]
+name = "safe-wallet"
+version = "0.1.0"
+requires-python = ">=3.12, <3.14"
+dependencies = [
+    "etherscan-python>=2.1.0",
+    "ipykernel>=7.4.0",
+    "joblib>=1.6.0",
+    "kagglehub>=0.3.0",
+    "pandas>=2.0.0",
+    "python-dotenv>=1.2.4",
+    "scikit-learn>=1.4.0",
+    "torch>=2.2.0",
+    "torch-geometric>=2.5.0",
+    "web3>=8.0.0",
+]
