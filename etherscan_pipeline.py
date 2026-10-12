@@ -7,6 +7,10 @@ import requests
 import joblib
 import logging
 import warnings
+import sys
+import os
+from dotenv import load_dotenv
+
 warnings.filterwarnings('ignore', category=FutureWarning, module='torch.jit._script')
 
 from sybil_detection_gnn_model import SybilDetectionGNN
@@ -23,11 +27,7 @@ def __run_v2(func, api_key, net):
 
 Etherscan._Etherscan__run = __run_v2
 
-import sys
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', stream=sys.stdout)
-
-import os
-from dotenv import load_dotenv
 
 load_dotenv()
 ETHERSCAN_API_KEY = os.getenv('ETHERSCAN_API_KEY')
@@ -72,7 +72,8 @@ def get_most_recent_active_wallet():
                 return addr
     except Exception as e:
         logging.error(f"Failed to fetch latest block: {e}")
-    return "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+    logging.error("Failed to automatically find an active wallet. Please provide one via --address.")
+    return None
 
 def evaluate_address_history(target_address):
     model, scaler, device = load_model_and_scaler()
@@ -116,7 +117,9 @@ def evaluate_address_history(target_address):
 
     # Compute calculable features
     df['is_night'] = ((df['datetime'].dt.hour >= 22) | (df['datetime'].dt.hour <= 4)).astype(int)
-    df['notional_zscore_wallet'] = df.groupby(sender_col)['value'].transform(lambda x: (x - x.mean()) / x.std(ddof=0) if x.std(ddof=0) > 0 else 0).fillna(0)
+    df['notional_zscore_wallet'] = df.groupby(sender_col)['value'].transform(
+        lambda x: (x - x.mean()) / x.std(ddof=0) if x.std(ddof=0) > 0 else 0
+    ).fillna(0)
     
     df = df.sort_values([sender_col, 'datetime'])
     df.set_index('datetime', inplace=True)
@@ -165,7 +168,9 @@ def evaluate_address_history(target_address):
     logging.info("Running evaluation through Graph Neural Network...")
     with torch.no_grad():
         log_probs = model(x, edge_index)
-        probabilities = torch.exp(log_probs[:, 1]) 
+        TEMPERATURE = 5.0
+        softened_log_probs = log_probs / TEMPERATURE
+        probabilities = torch.nn.functional.softmax(softened_log_probs, dim=1)[:, 1]
         
     risk_scores = (probabilities * 100).round()
     
@@ -178,32 +183,34 @@ def evaluate_address_history(target_address):
     print(f"\n--- EVALUATION RESULTS FOR NETWORK OF {target_address} ---")
     for res in results[:10]:
         if res['risk_score'] > 50:
-            print(f"??  HIGH RISK: {res['wallet']} -> {res['risk_score']}% probability of Wash Trading")
+            print(f"[HIGH RISK] {res['wallet']} -> {res['risk_score']}% probability of Wash Trading")
         else:
-            print(f"?  CLEAN: {res['wallet']} -> {res['risk_score']}% probability of Wash Trading")
-            
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--address', type=str, required=False, help="Ethereum address to scan (defaults to latest active wallet)")
-    args = parser.parse_args()
-    
-    logging.info("Starting scanning mode...")
+            print(f"[CLEAN] {res['wallet']} -> {res['risk_score']}% probability of Wash Trading")
+
+def run_pipeline(target_address=None, continuous=False, poll_interval=1.0):
+    logging.info("Starting Etherscan monitoring pipeline...")
     try:
         while True:
-            target = args.address
+            target = target_address
             if not target:
                 target = get_most_recent_active_wallet()
                 
             if target:
                 evaluate_address_history(target)
+            else:
+                logging.warning("No target wallet available to evaluate.")
                 
-            time.sleep(1.0)
-            if args.address:
+            if not continuous:
                 break
+                
+            time.sleep(poll_interval)
     except KeyboardInterrupt:
         logging.info("Scanning stopped by user.")
 
-
-
-
-
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description="Etherscan Wash Trading Detection Pipeline")
+    parser.add_argument('--address', type=str, required=False, help="Ethereum address to scan (defaults to latest active wallet)")
+    parser.add_argument('--continuous', action='store_true', help="Continuously poll and scan in real time")
+    args = parser.parse_args()
+    
+    run_pipeline(target_address=args.address, continuous=args.continuous)
